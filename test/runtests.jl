@@ -1,6 +1,3 @@
-using QuantumDynamicsGWP
-using Test
+using Test, TestItems, TestItemRunner
 
-@testset "QuantumDynamicsGWP.jl" begin
-    # Write your tests here.
-end
+@run_package_tests
