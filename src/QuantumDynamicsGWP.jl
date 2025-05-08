@@ -46,6 +46,14 @@ function overlap(gwpsumbra::GWPSum, gwpsumket::GWPSum)
     end
     ans
 end
+function overlap(gwpbra::GWP, gwplistket::GWPSum)
+    ans = 0.0 + 0.0im
+    for gwpket in gwplistket
+        ans += overlap(gwpbra, gwpket)
+    end
+    ans
+end
+overlap(gwplistbra::GWPSum, gwpket::GWP) = conj(overlap(gwpket, gwplistbra))
 function LinearAlgebra.norm(gwpsum::GWPSum)
     over = overlap(gwpsum, gwpsum)
     @assert imag(over) ≤ 1e-10 "The imaginary part of the overlap is greater than 1e-10"
@@ -56,6 +64,45 @@ function LinearAlgebra.normalize!(gwpsum::GWPSum)
     for gwp in gwpsum
         gwp.γ += exc_gamma
     end
+end
+
+function Prob(qtrial, ptrial, Atrial, init_list::GWPSum)
+    abs(overlap(GWPR(; q=qtrial, p=ptrial, A=Atrial), init_list))
+end
+
+function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
+    mc_gwplist = Vector{eltype(init_gwplist)}(undef, nMC)
+    mc_multiplicities = zeros(Int64, nMC)
+    q, p = init_gwplist[1].q, init_gwplist[1].p
+    naccept = 1
+    gwp = GWPR(; q, p, A)
+    Pcurr = Prob(q, p, A, init_gwplist)
+    Pprev = Pcurr
+    coeff = overlap(gwp, init_gwplist) / (Pcurr * nMC * 2π)
+    mc_gwplist[naccept] = GWPR(; q, p, A, γ_excess=-1im * log(coeff))
+    mc_multiplicities[naccept] = 1
+    for _ = 1:nMC-1
+        qtmp = q + (2rand() - 1) * dq
+        ptmp = p + (2rand() - 1) * dp
+        Pcurr = Prob(qtmp, ptmp, A, init_gwplist)
+        if Pcurr / Pprev ≥ rand()
+            q = qtmp
+            p = ptmp
+            Pprev = Pcurr
+            naccept += 1
+            gwp = GWPR(; q=qtmp, p=ptmp, A)
+            coeff = overlap(gwp, init_gwplist) / (Pprev * nMC * 2π)
+            gwp.γ -= 1im * log(coeff)
+            mc_gwplist[naccept] = gwp
+            mc_multiplicities[naccept] = 1
+        else
+            mc_multiplicities[naccept] += 1
+        end
+    end
+    for j = 1:naccept
+        mc_gwplist[j].γ -= 1im * log(mc_multiplicities[j])
+    end
+    GWPSum(mc_gwplist[1:naccept])
 end
 
 end
