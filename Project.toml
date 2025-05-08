@@ -1,0 +1,13 @@
+name = "QuantumDynamicsGWP"
+uuid = "45bfa6d7-af3e-44f0-b20d-5825f4b1c6c2"
+authors = ["Amartya Bose <amartya.bose@gmail.com> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
