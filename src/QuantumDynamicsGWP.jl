@@ -1,26 +1,35 @@
 module QuantumDynamicsGWP
 
 using LinearAlgebra
+using Clustering
 
 abstract type GWP end
 
 mutable struct GWPR <: GWP
-    q
-    p
-    A
-    γ
+    q::Vector{<:Real}
+    p::Vector{<:Real}
+    A::Matrix{<:Complex}
+    γ::Complex
 end
-GWPR(; q, p, A, γ_excess=0.0) = GWPR(q, p, A, - 0.25im * log(imag(A)/π) + γ_excess)
-(gwp::GWPR)(x) = exp(1im * (gwp.A/2 * (x-gwp.q)^2 + gwp.p * (x-gwp.q) + gwp.γ))
-γ_default(gwp::GWPR) = -0.25im * log(imag(gwp.A) / π)
+γ_default(A::AbstractMatrix) = -0.25im * log(det(imag(A))/π^size(A, 1))
+function GWPR(; q::AbstractVector, p::AbstractVector, A::AbstractMatrix, γ_excess::Complex=0.0+0.0im)
+    @assert length(q) == length(p) "Position and momentum should have same dimensions"
+    @assert length(q) == size(A, 2) && size(A, 1) == size(A, 2) "A matrix should have consistent dimensions"
+    @assert issymmetric(A) "A should be symmetric"
+    GWPR(q, p, A, γ_default(A) + γ_excess)
+end
+(gwp::GWPR)(x::AbstractVector) = exp(1im * (transpose(x-gwp.q) * gwp.A/2 * (x-gwp.q) + transpose(gwp.p) * (x-gwp.q) + gwp.γ))
+γ_default(gwp::GWPR) = γ_default(gwp.A)
 extra_coeff(gwp::GWPR) = exp(1im * (gwp.γ - γ_default(gwp)))
 function overlap(gwpbra::GWPR, gwpket::GWPR)
     q1, p1, A1, γ1 = gwpbra.q, gwpbra.p, gwpbra.A, gwpbra.γ
     q2, p2, A2, γ2 = gwpket.q, gwpket.p, gwpket.A, gwpket.γ
 
+    @assert size(A1)==size(A2) "The two GWPs are not on same dimensional spaces."
+
     A = A2 - conj(A1)
     b = p2 - p1 - A2 * q2 + conj(A1) * q1
-    exp(1im * (γ2 - conj(γ1)) - 1im * (p2 * q2 - p1 * q1) + 0.5im * (A2 * q2^2 - conj(A1) * q1^2)) * sqrt(2im * π / A) * exp(-0.5im * b^2 / A)
+    exp(1im * (γ2 - conj(γ1)) - 1im * (transpose(p2) * q2 - transpose(p1) * q1) + 0.5im * (transpose(q2) * A2 * q2 - transpose(q1) * conj(A1) * q1)) * sqrt((2im * π)^size(A, 1) / det(A)) * exp(-0.5im * transpose(b) * (A \ b))
 end
 function LinearAlgebra.norm(gwp::GWP)
     over = overlap(gwp, gwp)
@@ -74,16 +83,18 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
     mc_gwplist = Vector{eltype(init_gwplist)}(undef, nMC)
     mc_multiplicities = zeros(Int64, nMC)
     q, p = init_gwplist[1].q, init_gwplist[1].p
+    spacedim = length(q)
+    twopid = (2π)^spacedim
     naccept = 1
     gwp = GWPR(; q, p, A)
     Pcurr = Prob(q, p, A, init_gwplist)
     Pprev = Pcurr
-    coeff = overlap(gwp, init_gwplist) / (Pcurr * nMC * 2π)
+    coeff = overlap(gwp, init_gwplist) / Pcurr
     mc_gwplist[naccept] = GWPR(; q, p, A, γ_excess=-1im * log(coeff))
     mc_multiplicities[naccept] = 1
     for _ = 1:nMC-1
-        qtmp = q + (2rand() - 1) * dq
-        ptmp = p + (2rand() - 1) * dp
+        qtmp = q + (2rand(spacedim) .- 1) * dq
+        ptmp = p + (2rand(spacedim) .- 1) * dp
         Pcurr = Prob(qtmp, ptmp, A, init_gwplist)
         if Pcurr / Pprev ≥ rand()
             q = qtmp
@@ -91,7 +102,7 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
             Pprev = Pcurr
             naccept += 1
             gwp = GWPR(; q=qtmp, p=ptmp, A)
-            coeff = overlap(gwp, init_gwplist) / (Pprev * nMC * 2π)
+            coeff = overlap(gwp, init_gwplist) / Pcurr
             gwp.γ -= 1im * log(coeff)
             mc_gwplist[naccept] = gwp
             mc_multiplicities[naccept] = 1
@@ -100,9 +111,29 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
         end
     end
     for j = 1:naccept
-        mc_gwplist[j].γ -= 1im * log(mc_multiplicities[j])
+        mc_gwplist[j].γ -= 1im * log(mc_multiplicities[j] / (nMC * twopid))
     end
     GWPSum(mc_gwplist[1:naccept])
 end
 
+function cluster_reduction(mc_sum::GWPSum, nclusters::Int64)
+    qppoints = reduce(hcat, [vcat(gwp.q, gwp.p) for gwp in mc_sum])
+    weights = [abs(extra_coeff(gwp)) for gwp in mc_sum]
+    kmeans_result = kmeans(qppoints, nclusters; weights)
+    a = assignments(kmeans_result)
+    centers = kmeans_result.centers
+
+    coeff = zeros(ComplexF64, nclusters)
+    for (ass, extracoeff) in zip(a, extra_coeff.(mc_sum))
+        coeff[ass] += extracoeff
+    end
+    A = mc_sum[1].A
+    gwpsum = Vector{GWP}(undef, nclusters)
+    ndims = size(qppoints, 1)÷2
+    for j = 1:nclusters
+        gwpsum[j] = GWPR(; q=centers[1:ndims, j], p=centers[ndims+1:end, j], A, γ_excess=-1im * log(coeff[j]))
+    end
+
+    GWPSum(gwpsum)
+end
 end
