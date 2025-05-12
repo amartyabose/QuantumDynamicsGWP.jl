@@ -18,6 +18,12 @@ function GWPR(; q::AbstractVector, p::AbstractVector, A::AbstractMatrix, γ_exce
     @assert issymmetric(A) "A should be symmetric"
     GWPR(q, p, A, γ_default(A) + γ_excess)
 end
+function GWPR_PQS(; q::AbstractVector, p::AbstractVector, P::AbstractMatrix, Q::AbstractMatrix, S::AbstractFloat=0.0)
+    @assert length(q) == length(p) "Position and momentum should have same dimensions"
+    d = size(P, 1)
+    γ = S + 1im * (0.25d * log(π) + 0.5 * log(det(Q)))
+    GWPR(q, p, P*inv(Q), γ)
+end
 (gwp::GWPR)(x::AbstractVector) = exp(1im * (transpose(x-gwp.q) * gwp.A/2 * (x-gwp.q) + transpose(gwp.p) * (x-gwp.q) + gwp.γ))
 γ_default(gwp::GWPR) = γ_default(gwp.A)
 extra_coeff(gwp::GWPR) = exp(1im * (gwp.γ - γ_default(gwp)))
