@@ -18,7 +18,7 @@ function GWPR(; q::AbstractVector, p::AbstractVector, A::AbstractMatrix, γ_exce
     @assert issymmetric(A) "A should be symmetric"
     GWPR(q, p, A, γ_default(A) + γ_excess)
 end
-function GWPR_PQS(; q::AbstractVector, p::AbstractVector, P::AbstractMatrix, Q::AbstractMatrix, S::AbstractFloat=0.0)
+function GWPR_PQS(; q::AbstractVector, p::AbstractVector, P::AbstractMatrix, Q::AbstractMatrix, S=0.0+0.0im)
     @assert length(q) == length(p) "Position and momentum should have same dimensions"
     d = size(P, 1)
     γ = S + 1im * (0.25d * log(π) + 0.5 * log(det(Q)))
@@ -35,7 +35,8 @@ function overlap(gwpbra::GWPR, gwpket::GWPR)
 
     A = A2 - conj(A1)
     b = p2 - p1 - A2 * q2 + conj(A1) * q1
-    exp(1im * (γ2 - conj(γ1)) - 1im * (transpose(p2) * q2 - transpose(p1) * q1) + 0.5im * (transpose(q2) * A2 * q2 - transpose(q1) * conj(A1) * q1)) * sqrt((2im * π)^size(A, 1) / det(A)) * exp(-0.5im * transpose(b) * (A \ b))
+    over = exp(1im * (γ2 - conj(γ1)) - 1im * (transpose(p2) * q2 - transpose(p1) * q1) + 0.5im * (transpose(q2) * A2 * q2 - transpose(q1) * conj(A1) * q1)) * sqrt((2im * π)^size(A, 1) / det(A)) * exp(-0.5im * transpose(b) * (A \ b))
+    isnan(over) || isinf(over) ? 0.0 + 0.0im : over
 end
 function LinearAlgebra.norm(gwp::GWP)
     over = overlap(gwp, gwp)
@@ -79,6 +80,11 @@ function LinearAlgebra.normalize!(gwpsum::GWPSum)
     for gwp in gwpsum
         gwp.γ += exc_gamma
     end
+end
+function LinearAlgebra.normalize(gwpsum::GWPSum)
+    gwpsumcopy = deepcopy(gwpsum)
+    normalize!(gwpsumcopy)
+    gwpsumcopy
 end
 
 function Prob(qtrial, ptrial, Atrial, init_list::GWPSum)
