@@ -1,5 +1,7 @@
 @testitem "Single GWPR" begin
     using LinearAlgebra
+    using Random
+    Random.seed!(1234)
     for _ = 1:100
         ψ = QuantumDynamicsGWP.GWPR(; q=(2rand(1).-1)*10.0, p=(2rand(1).-1), A=rand(1,1) * 1im, γ_excess=0.0+0.0im)
         @test norm(ψ) ≈ 1.0
@@ -19,6 +21,8 @@ end
 
 @testitem "MC Sampling of GWPSum" setup=[gwpsetup] begin
     using LinearAlgebra
+    using Random
+    Random.seed!(1234)
     normalize!(gwpsetup.init_list)
     nMC = 10000
     mc_list = QuantumDynamicsGWP.MCsample(gwpsetup.init_list, 4.0, 4.0, ones(1, 1) * 1.0im, nMC)
@@ -31,6 +35,8 @@ end
 
 @testitem "Clustering of MC Samples" setup=[gwpsetup] begin
     using LinearAlgebra
+    using Random
+    Random.seed!(1234)
     normalize!(gwpsetup.init_list)
     nMC = 10000
     mc_list = QuantumDynamicsGWP.MCsample(gwpsetup.init_list, 4.0, 4.0, ones(1, 1) * 1.0im, nMC)
