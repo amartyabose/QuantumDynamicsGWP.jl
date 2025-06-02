@@ -16,7 +16,7 @@ end
 function GWPR(; q::AbstractVector, p::AbstractVector, A::AbstractMatrix, γ_excess::Complex=0.0+0.0im)
     @assert length(q) == length(p) "Position and momentum should have same dimensions"
     @assert length(q) == size(A, 2) && size(A, 1) == size(A, 2) "A matrix should have consistent dimensions"
-    @assert issymmetric(A) "A should be symmetric"
+    @assert issymmetric(A) "A should be symmetric. $(A)"
     GWPR(q, p, A, γ_default(A) + γ_excess)
 end
 function GWPR_PQS(; q::AbstractVector, p::AbstractVector, P::AbstractMatrix, Q::AbstractMatrix, S=0.0+0.0im)
@@ -36,7 +36,7 @@ function overlap(gwpbra::GWPR, gwpket::GWPR)
 
     A = A2 - conj(A1)
     b = p2 - p1 - A2 * q2 + conj(A1) * q1
-    over = exp(1im * (γ2 - conj(γ1)) - 1im * (transpose(p2) * q2 - transpose(p1) * q1) + 0.5im * (transpose(q2) * A2 * q2 - transpose(q1) * conj(A1) * q1)) * sqrt((2im * π)^size(A, 1) / det(A)) * exp(-0.5im * transpose(b) * (A \ b))
+    over = exp(1im * (γ2 - conj(γ1)) - 1im * (transpose(p2) * q2 - transpose(p1) * q1)) * sqrt((2im * π)^size(A, 1) / det(A)) * exp(-0.5im * (transpose(b) * (A \ b)-(transpose(q2) * A2 * q2 - transpose(q1) * conj(A1) * q1)))
     isnan(over) || isinf(over) ? 0.0 + 0.0im : over
 end
 function LinearAlgebra.norm(gwp::GWP)
@@ -100,7 +100,13 @@ end
 mutable struct GWPSum{T<:GWP}
     gwps::Vector{T}
 end
-(gwpsum::GWPSum)(x) = sum([g(x) for g in gwpsum])
+function (gwpsum::GWPSum)(x)
+    ngwps = length(gwpsum)
+    @floop for j in 1:ngwps
+        @reduce ans = 0.0im + gwpsum[j](x)
+    end
+    ans
+end
 Base.eltype(gwpsum::GWPSum) = eltype(gwpsum.gwps)
 Base.length(gwpsum::GWPSum) = length(gwpsum.gwps)
 Base.firstindex(gwpsum::GWPSum) = 1
@@ -108,14 +114,17 @@ Base.lastindex(gwpsum::GWPSum) = length(gwpsum)
 Base.iterate(gwpsum::GWPSum, state=1) = state ≤ length(gwpsum) ? (gwpsum.gwps[state], state+1) : nothing
 Base.getindex(gwpsum::GWPSum, i::Int64) = gwpsum.gwps[i]
 function overlap(gwpsumbra::GWPSum, gwpsumket::GWPSum)
-    @floop for gwpbra in gwpsumbra, gwpket in gwpsumket
-        @reduce ans = 0.0im + overlap(gwpbra, gwpket)
+    nbras = length(gwpsumbra)
+    nkets = length(gwpsumket)
+    @floop for j = 1:nbras, k = 1:nkets
+        @reduce ans = 0.0im + overlap(gwpsumbra[j], gwpsumket[k])
     end
     ans
 end
 function overlap(gwpbra::GWP, gwplistket::GWPSum)
-    @floop for gwpket in gwplistket
-        @reduce ans = 0.0im + overlap(gwpbra, gwpket)
+    nkets = length(gwplistket)
+    @floop for j = 1:nkets
+        @reduce ans = 0.0im + overlap(gwpbra, gwplistket[j])
     end
     ans
 end
@@ -191,7 +200,15 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
     GWPSum(mc_gwplist[1:naccept])
 end
 
-function cluster_reduction(mc_sum::GWPSum, nclusters::Int64)
+function groupby_clusters(mc_sum::GWPSum, assignments, nclusters)
+    clusterlist = [GWP[] for _ = 1:nclusters]
+    for (a, w) in zip(assignments, mc_sum)
+        push!(clusterlist[a], w)
+    end
+    [GWPSum(c) for c in clusterlist]
+end
+
+function cluster_reduction_dumb(mc_sum::GWPSum, nclusters::Int64)
     qppoints = reduce(hcat, [vcat(gwp.q, gwp.p) for gwp in mc_sum])
     weights = [abs(extra_coeff(gwp)) for gwp in mc_sum]
     kmeans_result = kmeans(qppoints, nclusters; weights)
@@ -211,4 +228,41 @@ function cluster_reduction(mc_sum::GWPSum, nclusters::Int64)
 
     GWPSum(gwpsum)
 end
+
+function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
+    qsize = length(mc_sum[1].q)
+    psize = length(mc_sum[1].p)
+    qppoints = reduce(hcat, [vcat(gwp.q, gwp.p) for gwp in mc_sum])
+    weights = [abs(extra_coeff(gwp)) for gwp in mc_sum]
+    kmeans_result = kmeans(qppoints, nclusters; weights)
+    a = assignments(kmeans_result)
+    clustersum = groupby_clusters(mc_sum, a, nclusters)
+    qmean = zeros(qsize, nclusters)
+    pmean = zeros(psize, nclusters)
+    qvar = zeros(qsize, nclusters)
+    pvar = zeros(psize, nclusters)
+    clusternorm = zeros(nclusters)
+    A = [zeros(ComplexF64, qsize, qsize) for _=1:nclusters]
+    γ_excess = zeros(ComplexF64, nclusters)
+    gwplist = Vector{GWPR}(undef, nclusters)
+    for (j, cluster) in enumerate(clustersum)
+        clusternorm[j] = norm(cluster)
+        qmean[:, j] .= xexpect(cluster) / clusternorm[j]^2
+        pmean[:, j] .= pexpect(cluster) / clusternorm[j]^2
+        qvar[:, j] .= x2expect(cluster) / clusternorm[j]^2 .- qmean[:, j].^2
+        pvar[:, j] .= p2expect(cluster) / clusternorm[j]^2 .- pmean[:, j].^2
+        imA = 1.0 ./ (2 * qvar[:, j])
+        reA = sqrt.(abs.((2 * pvar[:, j] .- imA) .* imA))
+        A[j] = diagm(reA + 1im * imA)
+        γ_excess[j] = -1im * log(clusternorm[j]) + angle(cluster(qmean[:, j]))
+        @show j, clusternorm[j], γ_excess[j]
+        if clusternorm[j] == 0.0
+            @show length(cluster)
+            @show cluster
+        end
+        gwplist[j] = GWPR(; q=qmean[:,j], p=pmean[:,j], A=A[j], γ_excess=γ_excess[j])
+    end
+    GWPSum(gwplist)
+end
+
 end
