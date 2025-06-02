@@ -2,6 +2,7 @@ module QuantumDynamicsGWP
 
 using LinearAlgebra
 using Clustering
+using FLoops
 
 abstract type GWP end
 
@@ -47,34 +48,96 @@ function LinearAlgebra.normalize!(gwp::GWP)
     gwp.γ += 1im * log(norm(gwp))
 end
 
+function xelem(gwpbra::GWPR, gwpket::GWPR)
+    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
+    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+
+    dq = q1 - q2
+    dp = p1 - p2
+    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
+    pre = (q1+q2)/2 + -(1im*(dp/delA))
+
+    pre * overlap(gwpbra, gwpket)
+end
+
+function pelem(gwpbra::GWPR, gwpket::GWPR)
+    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
+    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+
+    dq = q1 - q2
+    dp = p1 - p2
+    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
+    pre = p2 + A2*(dq/2 - 1im*(dp/delA))
+
+    pre * overlap(gwpbra, gwpket)
+end
+
+function x2elem(gwpbra::GWPR, gwpket::GWPR)
+    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
+    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+
+    dq = q1 - q2
+    dp = p1 - p2
+    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
+    capQ=(q1 + q2)/2
+    pre = capQ^2 - 2im*capQ*(dp/delA)-(dp/delA)^2 + (1/delA)
+
+    pre * overlap(gwpbra, gwpket)
+end
+
+function p2elem(gwpbra::GWPR, gwpket::GWPR)
+    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
+    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+
+    dq = q1 - q2
+    dp = p1 - p2
+    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
+    pre = (A2^2)*((1/delA)-((dp/delA)+ (1im*dq/2)^2)) + 2 * A2 * p2 *((dq/2)- (1im * dp / delA)) + (p2^2) - 1im*A2
+
+    pre * overlap(gwpbra, gwpket)
+end
+
 mutable struct GWPSum{T<:GWP}
     gwps::Vector{T}
 end
 (gwpsum::GWPSum)(x) = sum([g(x) for g in gwpsum])
 Base.eltype(gwpsum::GWPSum) = eltype(gwpsum.gwps)
 Base.length(gwpsum::GWPSum) = length(gwpsum.gwps)
+Base.firstindex(gwpsum::GWPSum) = 1
+Base.lastindex(gwpsum::GWPSum) = length(gwpsum)
 Base.iterate(gwpsum::GWPSum, state=1) = state ≤ length(gwpsum) ? (gwpsum.gwps[state], state+1) : nothing
 Base.getindex(gwpsum::GWPSum, i::Int64) = gwpsum.gwps[i]
 function overlap(gwpsumbra::GWPSum, gwpsumket::GWPSum)
-    ans = 0.0 + 0.0im
-    for gwpbra in gwpsumbra, gwpket in gwpsumket
-        ans += overlap(gwpbra, gwpket)
+    @floop for gwpbra in gwpsumbra, gwpket in gwpsumket
+        @reduce ans = 0.0im + overlap(gwpbra, gwpket)
     end
     ans
 end
 function overlap(gwpbra::GWP, gwplistket::GWPSum)
-    ans = 0.0 + 0.0im
-    for gwpket in gwplistket
-        ans += overlap(gwpbra, gwpket)
+    @floop for gwpket in gwplistket
+        @reduce ans = 0.0im + overlap(gwpbra, gwpket)
     end
     ans
 end
 overlap(gwplistbra::GWPSum, gwpket::GWP) = conj(overlap(gwpket, gwplistbra))
-function LinearAlgebra.norm(gwpsum::GWPSum)
-    over = overlap(gwpsum, gwpsum)
-    @assert imag(over) ≤ 1e-10 "The imaginary part of the overlap is greater than 1e-10"
-    sqrt(real(over))
+function expval(gwpsum::GWPSum, fn)
+    num_gwps = length(gwpsum)
+    @floop for j = 1:num_gwps
+        localval = 0.0
+        for k = j+1:num_gwps
+            @inbounds localval += real(fn(gwpsum[j], gwpsum[k]))
+        end
+        localval *= 2.0
+        @inbounds localval += real(fn(gwpsum[j], gwpsum[j]))
+        @reduce expval = 0.0 + localval
+    end
+    expval
 end
+xexpect(gwpsum::GWPSum) = expval(gwpsum, xelem)
+x2expect(gwpsum::GWPSum) = expval(gwpsum, x2elem)
+pexpect(gwpsum::GWPSum) = expval(gwpsum, pelem)
+p2expect(gwpsum::GWPSum) = expval(gwpsum, p2elem)
+LinearAlgebra.norm(gwpsum::GWPSum) = sqrt(expval(gwpsum, overlap))
 function LinearAlgebra.normalize!(gwpsum::GWPSum)
     exc_gamma = 1im * log(norm(gwpsum))
     for gwp in gwpsum
