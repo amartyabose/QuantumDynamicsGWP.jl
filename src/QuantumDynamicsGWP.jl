@@ -1,7 +1,8 @@
 module QuantumDynamicsGWP
 
 using LinearAlgebra
-using Clustering
+# using Clustering
+using ParallelKMeans
 using FLoops
 
 abstract type GWP end
@@ -131,22 +132,23 @@ end
 overlap(gwplistbra::GWPSum, gwpket::GWP) = conj(overlap(gwpket, gwplistbra))
 function expval(gwpsum::GWPSum, fn)
     num_gwps = length(gwpsum)
+    num_fns = length(fn)
     @floop for j = 1:num_gwps
-        localval = 0.0
+        localval = zeros(num_fns)
         for k = j+1:num_gwps
-            @inbounds localval += real(fn(gwpsum[j], gwpsum[k]))
+            @inbounds localval += [real(f(gwpsum[j], gwpsum[k])) for f in fn]
         end
-        localval *= 2.0
-        @inbounds localval += real(fn(gwpsum[j], gwpsum[j]))
-        @reduce expval = 0.0 + localval
+        localval .*= 2.0
+        @inbounds localval .+= [real(f(gwpsum[j], gwpsum[j])) for f in fn]
+        @reduce expval = zeros(num_fns) + localval
     end
     expval
 end
-xexpect(gwpsum::GWPSum) = expval(gwpsum, xelem)
-x2expect(gwpsum::GWPSum) = expval(gwpsum, x2elem)
-pexpect(gwpsum::GWPSum) = expval(gwpsum, pelem)
-p2expect(gwpsum::GWPSum) = expval(gwpsum, p2elem)
-LinearAlgebra.norm(gwpsum::GWPSum) = sqrt(expval(gwpsum, overlap))
+xexpect(gwpsum::GWPSum) = expval(gwpsum, [xelem])[1]
+x2expect(gwpsum::GWPSum) = expval(gwpsum, [x2elem])[1]
+pexpect(gwpsum::GWPSum) = expval(gwpsum, [pelem])[1]
+p2expect(gwpsum::GWPSum) = expval(gwpsum, [p2elem])[1]
+LinearAlgebra.norm(gwpsum::GWPSum) = sqrt(expval(gwpsum, [overlap])[1])
 function LinearAlgebra.normalize!(gwpsum::GWPSum)
     exc_gamma = 1im * log(norm(gwpsum))
     for gwp in gwpsum
@@ -211,7 +213,7 @@ end
 function cluster_reduction_dumb(mc_sum::GWPSum, nclusters::Int64)
     qppoints = reduce(hcat, [vcat(gwp.q, gwp.p) for gwp in mc_sum])
     weights = [abs(extra_coeff(gwp)) for gwp in mc_sum]
-    kmeans_result = kmeans(qppoints, nclusters; weights)
+    kmeans_result = kmeans(Coreset(), qppoints, nclusters; weights)
     a = assignments(kmeans_result)
     centers = kmeans_result.centers
 
@@ -234,8 +236,9 @@ function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
     psize = length(mc_sum[1].p)
     qppoints = reduce(hcat, [vcat(gwp.q, gwp.p) for gwp in mc_sum])
     weights = [abs(extra_coeff(gwp)) for gwp in mc_sum]
-    kmeans_result = kmeans(qppoints, nclusters; weights)
-    a = assignments(kmeans_result)
+    kmeans_result = kmeans(Yinyang(), qppoints, nclusters; weights)
+    # a = assignments(kmeans_result)
+    a = kmeans_result.assignments
     clustersum = groupby_clusters(mc_sum, a, nclusters)
     qmean = zeros(qsize, nclusters)
     pmean = zeros(psize, nclusters)
@@ -245,22 +248,25 @@ function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
     A = [zeros(ComplexF64, qsize, qsize) for _=1:nclusters]
     γ_excess = zeros(ComplexF64, nclusters)
     gwplist = Vector{GWPR}(undef, nclusters)
-    for (j, cluster) in enumerate(clustersum)
-        clusternorm[j] = norm(cluster)
-        qmean[:, j] .= xexpect(cluster) / clusternorm[j]^2
-        pmean[:, j] .= pexpect(cluster) / clusternorm[j]^2
-        qvar[:, j] .= x2expect(cluster) / clusternorm[j]^2 .- qmean[:, j].^2
-        pvar[:, j] .= p2expect(cluster) / clusternorm[j]^2 .- pmean[:, j].^2
-        imA = 1.0 ./ (2 * qvar[:, j])
-        reA = sqrt.(abs.((2 * pvar[:, j] .- imA) .* imA))
-        A[j] = diagm(reA + 1im * imA)
-        γ_excess[j] = -1im * log(clusternorm[j]) + angle(cluster(qmean[:, j]))
-        @show j, clusternorm[j], γ_excess[j]
-        if clusternorm[j] == 0.0
-            @show length(cluster)
-            @show cluster
+    @inbounds begin
+        for (j, cluster) in enumerate(clustersum)
+            xbar, x2bar, pbar, p2bar, psipsi = expval(cluster, [xelem, x2elem, pelem, p2elem, overlap])
+            clusternorm[j] = sqrt(psipsi)
+            qmean[:, j] .= xbar / psipsi
+            pmean[:, j] .= pbar / psipsi
+            qvar[:, j] .= x2bar / psipsi .- qmean[:, j].^2
+            pvar[:, j] .= p2bar / psipsi .- pmean[:, j].^2
+            imA = 1.0 ./ (2 * qvar[:, j])
+            reA = sqrt.(abs.((2 * pvar[:, j] .- imA) .* imA))
+            A[j] = diagm(reA + 1im * imA)
+            γ_excess[j] = -1im * log(clusternorm[j]) + angle(cluster(qmean[:, j]))
+            @show j, clusternorm[j], γ_excess[j]
+            if clusternorm[j] == 0.0
+                @show length(cluster)
+                @show cluster
+            end
+            gwplist[j] = GWPR(; q=qmean[:,j], p=pmean[:,j], A=A[j], γ_excess=γ_excess[j])
         end
-        gwplist[j] = GWPR(; q=qmean[:,j], p=pmean[:,j], A=A[j], γ_excess=γ_excess[j])
     end
     GWPSum(gwplist)
 end
