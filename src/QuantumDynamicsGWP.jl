@@ -260,15 +260,24 @@ function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
             reA = sqrt.(abs.((2 * pvar[:, j] .- imA) .* imA))
             A[j] = diagm(reA + 1im * imA)
             γ_excess[j] = -1im * log(clusternorm[j]) + angle(cluster(qmean[:, j]))
-            @show j, clusternorm[j], γ_excess[j]
-            if clusternorm[j] == 0.0
-                @show length(cluster)
-                @show cluster
-            end
             gwplist[j] = GWPR(; q=qmean[:,j], p=pmean[:,j], A=A[j], γ_excess=γ_excess[j])
         end
     end
     GWPSum(gwplist)
+end
+
+function cluster_reduction_threshold(mc_sum::GWPSum, threshold::Float64, start_clusters::Int64)
+    prev_size = start_clusters
+    current_size = start_clusters
+    prev_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
+    normalize!(prev_cluster)
+    if real(overlap(mc_sum, prev_cluster)) ≥ 1 - threshold
+        current_size = trunc(Int64, current_size * 0.75)
+        current_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
+    else
+        current_size = trunc(Int64, current_size * 1.25)
+        current_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
+    end
 end
 
 end
