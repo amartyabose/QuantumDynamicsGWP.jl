@@ -3,8 +3,15 @@
     using Random
     Random.seed!(1234)
     for _ = 1:100
-        ψ = QuantumDynamicsGWP.GWPR(; q=(2rand(1).-1)*10.0, p=(2rand(1).-1), A=rand(1,1) * 1im, γ_excess=0.0+0.0im)
+        d = rand(1:100)
+        diagelems = rand(d)
+        ψ = QuantumDynamicsGWP.GWPR(; q=(2rand(d).-1)*10.0, p=(2rand(d).-1), A=diagm(diagelems) * 1im, γ_excess=0.0+0.0im)
+        @show d
         @test norm(ψ) ≈ 1.0
+        @test QuantumDynamicsGWP.xelem(ψ, ψ) ≈ ψ.q
+        @test QuantumDynamicsGWP.pelem(ψ, ψ) ≈ ψ.p
+        @test diag(QuantumDynamicsGWP.x2elem(ψ, ψ)) ≈ 1.0 ./ (2 .* diagelems) .+ ψ.q.^2
+        @test diag(QuantumDynamicsGWP.p2elem(ψ, ψ)) ≈ diagelems ./ 2 .+ ψ.p.^2
     end
 end
 

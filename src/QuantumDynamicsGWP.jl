@@ -50,52 +50,59 @@ function LinearAlgebra.normalize!(gwp::GWP)
 end
 
 function xelem(gwpbra::GWPR, gwpket::GWPR)
-    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
-    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+    q1, p1, A1 = gwpbra.q, gwpbra.p, gwpbra.A
+    q2, p2, A2 = gwpket.q, gwpket.p, gwpket.A
 
-    dq = q1 - q2
-    dp = p1 - p2
-    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
-    pre = (q1+q2)/2 + -(1im*(dp/delA))
+    A = A2 .- conj.(A1)
+    b = p2 .- p1 .- A2 * q2 .+ conj.(A1) * q1
+    pre = -A \ b
 
-    pre * overlap(gwpbra, gwpket)
+    pre .* overlap(gwpbra, gwpket)  # d×1 complex vector
 end
 
 function pelem(gwpbra::GWPR, gwpket::GWPR)
-    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
-    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+    q1, p1, A1 = gwpbra.q, gwpbra.p, gwpbra.A
+    q2, p2, A2 = gwpket.q, gwpket.p, gwpket.A
 
-    dq = q1 - q2
-    dp = p1 - p2
-    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
-    pre = p2 + A2*(dq/2 - 1im*(dp/delA))
+    A = A2 .- conj.(A1)
+    b = p2 .- p1 .- A2 * q2 .+ conj.(A1) * q1
+    m = -A \ b
+    pre = p2 .+ A2 * (m .- q2)
 
-    pre * overlap(gwpbra, gwpket)
+    pre .* overlap(gwpbra, gwpket)  # d×1 complex vector
 end
 
 function x2elem(gwpbra::GWPR, gwpket::GWPR)
-    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
-    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+    q1, p1, A1 = gwpbra.q, gwpbra.p, gwpbra.A
+    q2, p2, A2 = gwpket.q, gwpket.p, gwpket.A
 
-    dq = q1 - q2
-    dp = p1 - p2
-    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
-    capQ=(q1 + q2)/2
-    pre = capQ^2 - 2im*capQ*(dp/delA)-(dp/delA)^2 + (1/delA)
+    A = A2 - conj.(A1)
+    b = p2 - p1 - A2 * q2 + conj.(A1) * q1
+    m = -A \ b
 
-    pre * overlap(gwpbra, gwpket)
+    outer = m * transpose(m)
+    cov = 1im * inv(A)  # i (A2 - A1*)^{-1}
+
+    S = overlap(gwpbra, gwpket)
+    S * (outer + cov)  # d×d complex matrix
 end
 
 function p2elem(gwpbra::GWPR, gwpket::GWPR)
-    q1, p1, A1, γ1 = gwpbra.q[1], gwpbra.p[1], gwpbra.A[1,1], gwpbra.γ
-    q2, p2, A2, γ2 = gwpket.q[1], gwpket.p[1], gwpket.A[1,1], gwpket.γ
+    q1, p1, A1 = gwpbra.q, gwpbra.p, gwpbra.A
+    q2, p2, A2 = gwpket.q, gwpket.p, gwpket.A
 
-    dq = q1 - q2
-    dp = p1 - p2
-    delA = imag(A1) + imag(A2) + 1im * (real(A1) - real(A2))
-    pre = (A2^2)*((1/delA)-((dp/delA)+ (1im*dq/2)^2)) + 2 * A2 * p2 *((dq/2)- (1im * dp / delA)) + (p2^2) - 1im*A2
+    A = A2 - conj.(A1)
+    b = p2 - p1 - A2 * q2 + conj.(A1) * q1
+    m = -A \ b  # μ
 
-    pre * overlap(gwpbra, gwpket)
+    v = p2 + A2 * (m - q2)  # ν
+
+    outer = v * transpose(v)  # ν ν^T (transpose without conj)
+    width1 = 1im * A2 * inv(A) * A2 
+    width2 = -1im * A2
+
+    S = overlap(gwpbra, gwpket)
+    S * (outer + width1 + width2)  # d×d complex matrix
 end
 
 mutable struct GWPSum{T<:GWP}
@@ -132,15 +139,13 @@ end
 overlap(gwplistbra::GWPSum, gwpket::GWP) = conj(overlap(gwpket, gwplistbra))
 function expval(gwpsum::GWPSum, fn)
     num_gwps = length(gwpsum)
-    num_fns = length(fn)
+    expval = [zero(real(f(gwpsum[1], gwpsum[1]))) for f in fn]
     @floop for j = 1:num_gwps
-        localval = zeros(num_fns)
+        localval = [real(f(gwpsum[j], gwpsum[j])) for f in fn]
         for k = j+1:num_gwps
-            @inbounds localval += [real(f(gwpsum[j], gwpsum[k])) for f in fn]
+            @inbounds localval += [2.0 * real(f(gwpsum[j], gwpsum[k])) for f in fn]
         end
-        localval .*= 2.0
-        @inbounds localval .+= [real(f(gwpsum[j], gwpsum[j])) for f in fn]
-        @reduce expval = zeros(num_fns) + localval
+        @reduce expval .+= localval
     end
     expval
 end
@@ -254,8 +259,8 @@ function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
             clusternorm[j] = sqrt(psipsi)
             qmean[:, j] .= xbar / psipsi
             pmean[:, j] .= pbar / psipsi
-            qvar[:, j] .= x2bar / psipsi .- qmean[:, j].^2
-            pvar[:, j] .= p2bar / psipsi .- pmean[:, j].^2
+            qvar[:, j] .= diag(x2bar) / psipsi .- qmean[:, j].^2
+            pvar[:, j] .= diag(p2bar) / psipsi .- pmean[:, j].^2
             imA = 1.0 ./ (2 * qvar[:, j])
             reA = sqrt.(abs.((2 * pvar[:, j] .- imA) .* imA))
             A[j] = diagm(reA + 1im * imA)
@@ -265,19 +270,4 @@ function cluster_reduction_sophisticated(mc_sum::GWPSum, nclusters::Int64)
     end
     GWPSum(gwplist)
 end
-
-function cluster_reduction_threshold(mc_sum::GWPSum, threshold::Float64, start_clusters::Int64)
-    prev_size = start_clusters
-    current_size = start_clusters
-    prev_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
-    normalize!(prev_cluster)
-    if real(overlap(mc_sum, prev_cluster)) ≥ 1 - threshold
-        current_size = trunc(Int64, current_size * 0.75)
-        current_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
-    else
-        current_size = trunc(Int64, current_size * 1.25)
-        current_cluster = cluster_reduction_sophisticated(mc_sum, current_size)
-    end
-end
-
 end
