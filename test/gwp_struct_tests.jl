@@ -47,7 +47,7 @@ end
     normalize!(gwpsetup.init_list)
     nMC = 10000
     mc_list = QuantumDynamicsGWP.MCsample(gwpsetup.init_list, 4.0, 4.0, ones(1, 1) * 1.0im, nMC)
-    cluster_list = QuantumDynamicsGWP.cluster_reduction(mc_list, 75)
+    cluster_list = QuantumDynamicsGWP.cluster_reduction_sophisticated(mc_list, 75)
     normalize!(cluster_list)
     over = QuantumDynamicsGWP.overlap(cluster_list, gwpsetup.init_list)
     @test real(over) ≥ 0.95
