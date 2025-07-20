@@ -17,7 +17,7 @@ end
 function GWPR(; q::AbstractVector, p::AbstractVector, A::AbstractMatrix, γ_excess::Complex=0.0+0.0im)
     @assert length(q) == length(p) "Position and momentum should have same dimensions"
     @assert length(q) == size(A, 2) && size(A, 1) == size(A, 2) "A matrix should have consistent dimensions"
-    @assert issymmetric(A) "A should be symmetric. $(A)"
+    @assert norm(A - transpose(A)) ≤ 1e-12 "A should be symmetric. $(A)"
     GWPR(q, p, A, γ_default(A) + γ_excess)
 end
 function GWPR_PQS(; q::AbstractVector, p::AbstractVector, P::AbstractMatrix, Q::AbstractMatrix, S=0.0+0.0im)
@@ -184,12 +184,15 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
     mc_gwplist[naccept] = GWPR(; q, p, A, γ_excess=-1im * log(coeff))
     mc_multiplicities[naccept] = 1
     for _ = 1:nMC-1
-        qtmp = q + (2rand(spacedim) .- 1) * dq
-        ptmp = p + (2rand(spacedim) .- 1) * dp
+        j = rand(1:spacedim)
+        qtmp = deepcopy(q)
+        ptmp = deepcopy(p)
+        qtmp[j] += (2rand() - 1) * dq[j]
+        ptmp[j] += (2rand() - 1) * dp[j]
         Pcurr = Prob(qtmp, ptmp, A, init_gwplist)
         if Pcurr / Pprev ≥ rand()
-            q = qtmp
-            p = ptmp
+            q = deepcopy(qtmp)
+            p = deepcopy(ptmp)
             Pprev = Pcurr
             naccept += 1
             gwp = GWPR(; q=qtmp, p=ptmp, A)
