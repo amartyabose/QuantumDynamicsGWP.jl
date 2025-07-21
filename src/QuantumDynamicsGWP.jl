@@ -139,13 +139,15 @@ end
 overlap(gwplistbra::GWPSum, gwpket::GWP) = conj(overlap(gwpket, gwplistbra))
 function expval(gwpsum::GWPSum, fn)
     num_gwps = length(gwpsum)
-    expval = [zero(real(f(gwpsum[1], gwpsum[1]))) for f in fn]
-    @floop for j = 1:num_gwps
-        localval = [real(f(gwpsum[j], gwpsum[j])) for f in fn]
-        for k = j+1:num_gwps
-            @inbounds localval += [2.0 * real(f(gwpsum[j], gwpsum[k])) for f in fn]
+    @inbounds begin
+        expval = [zero(real(f(gwpsum[1], gwpsum[1]))) for f in fn]
+        @floop for j = 1:num_gwps
+            localval = [real(f(gwpsum[j], gwpsum[j])) for f in fn]
+            for k = j+1:num_gwps
+                @inbounds localval += [2.0 * real(f(gwpsum[j], gwpsum[k])) for f in fn]
+            end
+            @reduce expval .+= localval
         end
-        @reduce expval .+= localval
     end
     expval
 end
@@ -170,10 +172,15 @@ function Prob(qtrial, ptrial, Atrial, init_list::GWPSum)
     abs(overlap(GWPR(; q=qtrial, p=ptrial, A=Atrial), init_list))
 end
 
-function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
+function MCsample(init_gwplist::GWPSum, A, nMC::Int64)
     mc_gwplist = Vector{eltype(init_gwplist)}(undef, nMC)
     mc_multiplicities = zeros(Int64, nMC)
     q, p = init_gwplist[1].q, init_gwplist[1].p
+    qbar, pbar, q2bar, p2bar = expval(init_gwplist, [xelem, pelem, x2elem, p2elem])
+    qstd = sqrt.(diag(q2bar) .- qbar .^ 2)
+    pstd = sqrt.(diag(p2bar) .- pbar .^ 2)
+    dq = qstd * 2
+    dp = pstd * 2
     spacedim = length(q)
     twopid = (2π)^spacedim
     naccept = 1
@@ -181,32 +188,35 @@ function MCsample(init_gwplist::GWPSum, dq, dp, A, nMC::Int64)
     Pcurr = Prob(q, p, A, init_gwplist)
     Pprev = Pcurr
     coeff = overlap(gwp, init_gwplist) / Pcurr
-    mc_gwplist[naccept] = GWPR(; q, p, A, γ_excess=-1im * log(coeff))
-    mc_multiplicities[naccept] = 1
-    for _ = 1:nMC-1
-        j = rand(1:spacedim)
-        qtmp = deepcopy(q)
-        ptmp = deepcopy(p)
-        qtmp[j] += (2rand() - 1) * dq[j]
-        ptmp[j] += (2rand() - 1) * dp[j]
-        Pcurr = Prob(qtmp, ptmp, A, init_gwplist)
-        if Pcurr / Pprev ≥ rand()
-            q = deepcopy(qtmp)
-            p = deepcopy(ptmp)
-            Pprev = Pcurr
-            naccept += 1
-            gwp = GWPR(; q=qtmp, p=ptmp, A)
-            coeff = overlap(gwp, init_gwplist) / Pcurr
-            gwp.γ -= 1im * log(coeff)
-            mc_gwplist[naccept] = gwp
-            mc_multiplicities[naccept] = 1
-        else
-            mc_multiplicities[naccept] += 1
+    @inbounds begin
+        mc_gwplist[naccept] = GWPR(; q, p, A, γ_excess=-1im * log(coeff))
+        mc_multiplicities[naccept] = 1
+        for _ = 1:nMC-1
+            j = rand(1:spacedim)
+            qtmp = deepcopy(q)
+            ptmp = deepcopy(p)
+            qtmp[j] += (2rand() - 1) * dq[j]
+            ptmp[j] += (2rand() - 1) * dp[j]
+            Pcurr = Prob(qtmp, ptmp, A, init_gwplist)
+            if Pcurr / Pprev ≥ rand()
+                q = deepcopy(qtmp)
+                p = deepcopy(ptmp)
+                Pprev = Pcurr
+                naccept += 1
+                gwp = GWPR(; q=qtmp, p=ptmp, A)
+                coeff = overlap(gwp, init_gwplist) / Pcurr
+                gwp.γ -= 1im * log(coeff)
+                mc_gwplist[naccept] = gwp
+                mc_multiplicities[naccept] = 1
+            else
+                mc_multiplicities[naccept] += 1
+            end
+        end
+        for j = 1:naccept
+            mc_gwplist[j].γ -= 1im * log(mc_multiplicities[j] / (nMC * twopid))
         end
     end
-    for j = 1:naccept
-        mc_gwplist[j].γ -= 1im * log(mc_multiplicities[j] / (nMC * twopid))
-    end
+    @info "MC acceptance ratio = $(naccept / nMC)"
     GWPSum(mc_gwplist[1:naccept])
 end
 
