@@ -60,7 +60,6 @@ end
     using LinearAlgebra
     using Random
     Random.seed!(1234)
-    normalize!(init_list)
     d = rand(1:2)
     nMC = 9000 * d^2
     diagelems = rand(d)
@@ -74,7 +73,7 @@ end
     mc_list = QuantumDynamicsGWP.MCsample(init_list, Matrix(I, d, d) * 1.0im, nMC)
     cluster_list = QuantumDynamicsGWP.cluster_reduction_sophisticated(mc_list, 75)
     normalize!(cluster_list)
-    over = QuantumDynamicsGWP.overlap(cluster_list, gwpsetup.init_list)
+    over = QuantumDynamicsGWP.overlap(cluster_list, init_list)
     @test real(over) ≥ 0.95
     @test imag(over) ≤ 1e-10
 end
